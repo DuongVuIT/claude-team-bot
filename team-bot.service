@@ -1,0 +1,13 @@
+[Unit]
+Description=Claude Team manager Telegram bot
+After=network-online.target
+
+[Service]
+WorkingDirectory=/home/ubuntu/team_bot
+ExecStart=/usr/bin/python3 -u bot.py
+Restart=always
+RestartSec=5
+User=ubuntu
+
+[Install]
+WantedBy=multi-user.target
