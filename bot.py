@@ -11,6 +11,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import socket
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -671,7 +672,17 @@ def on_callback(chat, mid, data_str):
 
 # ---------- vòng lặp ----------
 
+stopping = False  # nhận SIGTERM/SIGINT: xử lý xong lượt hiện tại rồi thoát
+
+
+def request_stop(*_):
+    global stopping
+    stopping = True
+
+
 def main():
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
     state = read_json(STATE, {})
     owners = {x.strip() for x in os.environ.get("OWNER_CHAT_ID", "").split(",") if x.strip()}
     if not owners and state.get("owner"):
@@ -679,7 +690,7 @@ def main():
     offset = state.get("offset", 0)
     load()  # gán id cho dữ liệu cũ
     print("bot started, owners =", len(owners), flush=True)
-    while True:
+    while not stopping:
         now = datetime.now(VN)
         if owners and now.hour >= REPORT_HOUR and state.get("last_report") != now.date().isoformat():
             try:
@@ -725,6 +736,13 @@ def main():
                 except Exception:
                     pass
         write_json(STATE, state)
+    # báo Telegram đã nhận hết tin, để lần chạy sau không xử lý lại
+    if offset:
+        try:
+            call("getUpdates", {"offset": offset, "timeout": 0}, 10, "poll")
+        except Exception as err:
+            print("confirm failed:", err, flush=True)
+    print("bot stopped", flush=True)
 
 
 def tg_poll(offset):
