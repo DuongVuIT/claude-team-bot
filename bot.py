@@ -6,13 +6,14 @@ Chỉ dùng thư viện chuẩn Python 3.9+. Cấu hình qua .env cạnh file:
   REPORT_HOUR=8       (giờ báo sáng, giờ Việt Nam)
 """
 import html
+import http.client
 import json
 import os
 import re
 import secrets
+import signal
+import socket
 import time
-import urllib.error
-import urllib.request
 from datetime import date, datetime, timedelta, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -35,7 +36,6 @@ def load_env():
 load_env()
 TOKEN = os.environ["BOT_TOKEN"]
 REPORT_HOUR = int(os.environ.get("REPORT_HOUR", "8"))
-API = f"https://api.telegram.org/bot{TOKEN}/"
 e = html.escape
 
 
@@ -80,17 +80,40 @@ def by_id(data, cid):
 
 # ---------- Telegram ----------
 
-def tg(method, timeout=30, **params):
+conns = {}  # kênh ("send" / "poll") -> kết nối HTTPS giữ sẵn, đỡ bắt tay SSL mỗi lần gọi
+
+
+def call(method, params, timeout, lane="send"):
     body = json.dumps({k: v for k, v in params.items() if v is not None}).encode()
-    req = urllib.request.Request(API + method, body, {"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.load(r)
-    except urllib.error.HTTPError as err:
-        msg = err.read().decode(errors="replace")
+    for _ in range(2):
+        conn = conns.get(lane)
+        reused = conn is not None
+        if not reused:
+            conn = conns[lane] = http.client.HTTPSConnection("api.telegram.org", timeout=timeout)
+        conn.timeout = timeout
+        try:
+            if conn.sock:
+                conn.sock.settimeout(timeout)
+            conn.request("POST", f"/bot{TOKEN}/{method}", body, {"Content-Type": "application/json"})
+            r = conn.getresponse()
+            raw = r.read()
+            break
+        except (http.client.HTTPException, OSError) as err:
+            conn.close()
+            conns.pop(lane, None)
+            # kết nối cũ bị server đóng: mở lại thử 1 lần; timeout thì không thử lại (tránh gửi trùng)
+            if not reused or isinstance(err, socket.timeout):
+                raise
+    if r.status >= 400:
+        msg = raw.decode(errors="replace")
         if "message is not modified" in msg:
             return {}
-        raise RuntimeError(f"{method}: {msg}") from None
+        raise RuntimeError(f"{method}: {msg}")
+    return json.loads(raw)
+
+
+def tg(method, timeout=30, **params):
+    return call(method, params, timeout)
 
 
 def send(chat, text, kb=None):
@@ -649,7 +672,17 @@ def on_callback(chat, mid, data_str):
 
 # ---------- vòng lặp ----------
 
+stopping = False  # nhận SIGTERM/SIGINT: xử lý xong lượt hiện tại rồi thoát
+
+
+def request_stop(*_):
+    global stopping
+    stopping = True
+
+
 def main():
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
     state = read_json(STATE, {})
     owners = {x.strip() for x in os.environ.get("OWNER_CHAT_ID", "").split(",") if x.strip()}
     if not owners and state.get("owner"):
@@ -657,7 +690,7 @@ def main():
     offset = state.get("offset", 0)
     load()  # gán id cho dữ liệu cũ
     print("bot started, owners =", len(owners), flush=True)
-    while True:
+    while not stopping:
         now = datetime.now(VN)
         if owners and now.hour >= REPORT_HOUR and state.get("last_report") != now.date().isoformat():
             try:
@@ -671,7 +704,8 @@ def main():
             res = tg_poll(offset)
         except Exception as err:
             print("poll failed:", err, flush=True)
-            time.sleep(3)
+            if not isinstance(err, socket.timeout):  # treo/timeout: poll lại ngay
+                time.sleep(3)
             continue
         for u in res.get("result", []):
             offset = state["offset"] = u["update_id"] + 1
@@ -702,15 +736,19 @@ def main():
                 except Exception:
                     pass
         write_json(STATE, state)
+    # báo Telegram đã nhận hết tin, để lần chạy sau không xử lý lại
+    if offset:
+        try:
+            call("getUpdates", {"offset": offset, "timeout": 0}, 10, "poll")
+        except Exception as err:
+            print("confirm failed:", err, flush=True)
+    print("bot stopped", flush=True)
 
 
 def tg_poll(offset):
-    # timeout HTTP (40s) phải lớn hơn long-poll của Telegram (25s)
-    body = json.dumps({"offset": offset, "timeout": 25,
-                       "allowed_updates": ["message", "callback_query"]}).encode()
-    req = urllib.request.Request(API + "getUpdates", body, {"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=40) as r:
-        return json.load(r)
+    # long-poll ngắn (10s) để kết nối bị treo được bỏ sớm; timeout HTTP (15s) phải lớn hơn
+    return call("getUpdates", {"offset": offset, "timeout": 10,
+                               "allowed_updates": ["message", "callback_query"]}, 15, "poll")
 
 
 if __name__ == "__main__":

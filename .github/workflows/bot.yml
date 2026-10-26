@@ -1,0 +1,46 @@
+name: team-bot
+
+# Bot chạy liên tục: mỗi lượt chạy ~5 tiếng 45 phút (giới hạn của GitHub là 6 tiếng),
+# lưu dữ liệu, rồi tự gọi lượt kế tiếp. Lịch 6 tiếng chỉ để dự phòng khi chuỗi bị đứt.
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+# chỉ một bot chạy một lúc; lượt mới xếp hàng chờ lượt cũ xong
+concurrency:
+  group: team-bot
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # đẩy dữ liệu mã hoá lên nhánh data
+  actions: write    # gọi lượt chạy kế tiếp
+
+jobs:
+  bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 358
+    env:
+      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+      OWNER_CHAT_ID: ${{ secrets.OWNER_CHAT_ID }}
+      DATA_KEY: ${{ secrets.DATA_KEY }}
+      REPORT_HOUR: "8"
+      RUN_MINUTES: "345"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tải dữ liệu
+        run: python3 ci/store.py load
+
+      - name: Chạy bot
+        run: ./ci/run.sh
+
+      - name: Lưu dữ liệu
+        if: always()
+        run: python3 ci/store.py save
+
+      - name: Gọi lượt kế tiếp
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run bot.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"

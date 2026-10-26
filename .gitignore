@@ -4,3 +4,6 @@ state.json
 *.log
 *.tmp
 __pycache__/
+.store_loaded
+.data_key
+.stop
