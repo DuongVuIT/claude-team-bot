@@ -8,3 +8,4 @@ __pycache__/
 .data_key
 .stop
 .venv/
+.DS_Store
