@@ -422,10 +422,12 @@ def run_kick(dry=False):
     """Kick khách hết hạn khỏi team bằng trình duyệt. Trả tin báo cáo, None nếu không có gì để báo."""
     data = load()
     targets = kick_targets(data)
-    if not targets:
-        return "🚪 Không có khách hết hạn nào cần kick." if dry else None
+    if not targets and not dry:
+        return None
     from kick import kick  # cần playwright: chỉ nạp khi dùng
-    res = kick({c["email"] for c in targets}, dry)
+    res = kick({c["email"] for c in targets}, dry)  # xem trước: luôn mở trình duyệt để thử đăng nhập
+    if not targets:
+        return "✅ Vào claude.ai OK.\n🚪 Không có khách hết hạn nào cần kick."
     lines, absent = [], 0
     for c in targets:
         r = res.get(c["email"].lower(), "lỗi: không rõ")
@@ -441,7 +443,7 @@ def run_kick(dry=False):
         lines.append(f"({absent} khách hết hạn đã không còn trong team)")
     if not dry and absent == len(targets):
         return None  # chẳng có ai để kick
-    head = "🔍 <b>Xem trước kick</b> (chưa xóa ai)" if dry else f"🚪 <b>Kick khách hết hạn — {dmy(today())}</b>"
+    head = "🔍 <b>Xem trước kick</b> (vào claude.ai OK, chưa xóa ai)" if dry else f"🚪 <b>Kick khách hết hạn — {dmy(today())}</b>"
     return "\n".join([head] + lines)
 
 
