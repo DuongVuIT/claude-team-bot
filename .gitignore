@@ -7,3 +7,4 @@ __pycache__/
 .store_loaded
 .data_key
 .stop
+.venv/

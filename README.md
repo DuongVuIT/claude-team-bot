@@ -37,4 +37,16 @@ Cài đặt một lần:
 3. Thêm secrets cho repo: `BOT_TOKEN`, `DATA_KEY` (nội dung `.data_key`), tuỳ chọn `OWNER_CHAT_ID`.
 4. Chạy lượt đầu: `gh workflow run bot.yml`.
 
+## Tự kick khách hết hạn
+
+Đúng 00:00 (giờ VN) ngày hết hạn, bot mở Chrome (Playwright), vào claude.ai → Admin settings → Members và bấm **Remove from team** cho khách hết hạn hoặc đã hoàn tiền, rồi báo lại qua Telegram. Bỏ qua email còn gói khác đang chạy và mọi owner/admin. Khách đã kick hiện 🚪 trên thẻ; gia hạn lại thì bot nhắc mời lại vào team.
+
+Cài đặt:
+
+1. Mở Chrome đang đăng nhập tài khoản owner/admin team → claude.ai → DevTools (⌥⌘I) → Application → Cookies → `https://claude.ai` → copy giá trị `sessionKey`.
+2. Thêm secret `CLAUDE_SESSION_KEY` cho repo với giá trị đó (chạy trên máy thì ghi vào `.env`).
+3. Gõ `/kick` trong bot để xem trước ai sẽ bị kick (không xoá ai). Báo lỗi đăng nhập nghĩa là cookie hết hạn hoặc bị claude.ai chặn.
+
+Lần đầu bật, bot đợi tới 00:00 kế tiếp mới kick. Cookie hết hạn thì bot báo lỗi và thử lại mỗi tiếng: lấy cookie mới, cập nhật secret, chạy lại workflow.
+
 Khi bot đã chạy trên Actions thì **không chạy bot trên máy nữa** (hai bot cùng lấy tin sẽ lỗi và lệch dữ liệu). Muốn lấy dữ liệu mới nhất về máy: `python3 ci/store.py load`.

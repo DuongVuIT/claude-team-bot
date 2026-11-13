@@ -24,10 +24,18 @@ jobs:
       BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
       OWNER_CHAT_ID: ${{ secrets.OWNER_CHAT_ID }}
       DATA_KEY: ${{ secrets.DATA_KEY }}
+      CLAUDE_SESSION_KEY: ${{ secrets.CLAUDE_SESSION_KEY }}  # cookie claude.ai để tự kick khách hết hạn
       REPORT_HOUR: "8"
       RUN_MINUTES: "345"
     steps:
       - uses: actions/checkout@v4
+
+      # trình duyệt để kick khách hết hạn (dùng Google Chrome có sẵn trên máy GitHub)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cài Playwright
+        run: pip install playwright
 
       - name: Tải dữ liệu
         run: python3 ci/store.py load

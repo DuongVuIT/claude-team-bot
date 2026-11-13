@@ -36,6 +36,7 @@ def load_env():
 load_env()
 TOKEN = os.environ["BOT_TOKEN"]
 REPORT_HOUR = int(os.environ.get("REPORT_HOUR", "8"))
+AUTO_KICK = bool(os.environ.get("CLAUDE_SESSION_KEY", "").strip())  # có cookie claude.ai mới tự kick
 e = html.escape
 
 
@@ -188,6 +189,23 @@ def status(c):
     return "expired" if left == 0 else "soon" if left <= 3 else "active"
 
 
+def gone_on(c):
+    """Ngày khách hết quyền dùng: ngày hết hạn, hoặc ngày hoàn tiền."""
+    return date.fromisoformat(c["refunded"]["on"]) if c.get("refunded") else end_of(c)
+
+
+def is_kicked(c):
+    """Đã kick sau lần hết hạn hiện tại chưa (gia hạn rồi hết hạn lại thì phải kick lại)."""
+    return c.get("kicked", "") >= gone_on(c).isoformat()
+
+
+def kick_targets(data):
+    """Khách hết hạn / đã hoàn tiền, chưa kick, và email không còn gói nào đang chạy."""
+    live = {c["email"].lower() for c in data if status(c) in ("active", "soon")}
+    return [c for c in data if status(c) in ("expired", "refunded") and not is_kicked(c)
+            and c["email"].lower() not in live]
+
+
 ICON = {"active": "🟢", "soon": "🟡", "expired": "🔴", "refunded": "⚪"}
 ORDER = {"soon": 0, "active": 1, "expired": 2, "refunded": 3}
 
@@ -253,6 +271,8 @@ def card_text(c, extra=""):
         lines.append(f"💸 Đã hoàn {vnd(r['amount'])} ngày {dmy(date.fromisoformat(r['on']))}")
     else:
         lines.append(f"💸 Hoàn nếu hủy hôm nay: <b>{vnd(refund_of(c))}</b>")
+    if c.get("kicked") and is_kicked(c):
+        lines.append(f"🚪 Đã kick khỏi team ngày {dmy(date.fromisoformat(c['kicked']))}")
     if c["history"]:
         lines.append(f"🔁 Đã gia hạn {len(c['history'])} lần · tổng đã thu {vnd(paid_of(c))}")
     if c["note"]:
@@ -344,6 +364,7 @@ HELP = """<b>Cách dùng</b>
 • <b>👥 Danh sách</b> — bấm vào khách để 🔁 gia hạn, ✏️ sửa, 💸 hoàn tiền, 🗑 xóa
 • <b>➕ Thêm khách</b> — bot hỏi từng bước, có nút chọn sẵn
 • Gõ <b>tên hoặc email</b> bất kỳ để tìm khách nhanh
+• 🚪 Khách hết hạn tự bị kick khỏi team lúc 00:00 · /kick xem trước ai sẽ bị kick
 
 <b>Quy tắc</b>
 • Gói tháng 30 ngày, gói tuần 7 ngày
@@ -383,12 +404,45 @@ def renew_screen(c, days):
 
 
 def do_renew(data, c, days, price):
+    """Gia hạn, trả về câu báo kết quả."""
+    was_kicked = is_kicked(c)
     start = renew_start(c)
     if not c.get("refunded"):
         c["history"].append({"start": c["start"], "days": c["days"], "price": c["price"]})
     c.pop("refunded", None)
     c.update(start=start.isoformat(), days=days, price=price)
     save(data)
+    return "✅ Đã gia hạn." + ("\n⚠️ Khách đã bị kick khỏi team, nhớ mời lại." if was_kicked else "")
+
+
+KICK_LABEL = {"removed": "đã kick", "present": "sẽ bị kick", "admin": "là owner/admin, bỏ qua"}
+
+
+def run_kick(dry=False):
+    """Kick khách hết hạn khỏi team bằng trình duyệt. Trả tin báo cáo, None nếu không có gì để báo."""
+    data = load()
+    targets = kick_targets(data)
+    if not targets:
+        return "🚪 Không có khách hết hạn nào cần kick." if dry else None
+    from kick import kick  # cần playwright: chỉ nạp khi dùng
+    res = kick({c["email"] for c in targets}, dry)
+    lines, absent = [], 0
+    for c in targets:
+        r = res.get(c["email"].lower(), "lỗi: không rõ")
+        if r == "absent":
+            absent += 1
+        else:
+            lines.append(f"• {e(c['name'])} <code>{e(c['email'])}</code> — {e(KICK_LABEL.get(r, r))}")
+        if not dry and r in ("removed", "absent"):
+            c["kicked"] = today().isoformat()
+    if not dry:
+        save(data)
+    if absent:
+        lines.append(f"({absent} khách hết hạn đã không còn trong team)")
+    if not dry and absent == len(targets):
+        return None  # chẳng có ai để kick
+    head = "🔍 <b>Xem trước kick</b> (chưa xóa ai)" if dry else f"🚪 <b>Kick khách hết hạn — {dmy(today())}</b>"
+    return "\n".join([head] + lines)
 
 
 FIELD_PROMPT = {
@@ -512,6 +566,14 @@ def on_text(chat, text):
         pending.pop(chat, None)
         send(chat, *list_view())
         return
+    if cmd == "/kick":
+        pending.pop(chat, None)
+        send(chat, "⏳ Đang mở trình duyệt kiểm tra team (không xóa ai)…")
+        try:
+            send(chat, run_kick(dry=True))
+        except Exception as err:
+            send(chat, f"⚠️ Lỗi: {e(str(err))[:800]}")
+        return
     if cmd == "/them" and "|" in arg:
         parts = [x.strip() for x in arg.split("|")]
         if len(parts) != 5:
@@ -569,8 +631,7 @@ def on_text(chat, text):
             return
         pending.pop(chat, None)
         if c:
-            do_renew(data, c, p["days"], price)
-            show_card(chat, c, extra="✅ Đã gia hạn.")
+            show_card(chat, c, extra=do_renew(data, c, p["days"], price))
         return
 
     if not text or text.startswith("/"):
@@ -625,8 +686,7 @@ def on_callback(chat, mid, data_str):
     elif kind == "r":
         edit(chat, mid, *renew_screen(c, int(parts[2])))
     elif kind == "R":
-        do_renew(data, c, int(parts[2]), int(parts[3]))
-        show_card(chat, c, mid, "✅ Đã gia hạn.")
+        show_card(chat, c, mid, do_renew(data, c, int(parts[2]), int(parts[3])))
     elif kind == "rp":
         pending[chat] = {"act": "renew_price", "id": c["id"], "days": int(parts[2])}
         edit(chat, mid, card_text(c, f"Gõ giá gia hạn +{plan(int(parts[2]))} (vd 430k):"),
@@ -689,9 +749,29 @@ def main():
         owners = {str(state["owner"])}
     offset = state.get("offset", 0)
     load()  # gán id cho dữ liệu cũ
-    print("bot started, owners =", len(owners), flush=True)
+    # lần đầu bật: chưa kick ngay, đợi 00:00 tới (kịp /kick xem trước)
+    state.setdefault("last_kick", today().isoformat())
+    kick_retry = 0.0
+    print("bot started, owners =", len(owners), "auto kick =", AUTO_KICK, flush=True)
     while not stopping:
         now = datetime.now(VN)
+        # 00:00 giờ VN (hoặc lúc bot chạy lại sau nửa đêm): kick khách vừa hết hạn
+        if (AUTO_KICK and owners and state["last_kick"] < now.date().isoformat()
+                and time.time() >= kick_retry):
+            try:
+                msg = run_kick()
+                state["last_kick"] = now.date().isoformat()
+                write_json(STATE, state)
+            except Exception as err:  # cookie hết hạn / mạng / giao diện đổi: thử lại sau 1 tiếng
+                print("kick failed:", repr(err), flush=True)
+                kick_retry = time.time() + 3600
+                msg = f"⚠️ Tự kick lỗi, 1 tiếng nữa thử lại:\n{e(str(err))[:800]}"
+            if msg:
+                for o in owners:
+                    try:
+                        send(o, msg)
+                    except Exception as err:
+                        print("kick notify failed:", err, flush=True)
         if owners and now.hour >= REPORT_HOUR and state.get("last_report") != now.date().isoformat():
             try:
                 for o in owners:
