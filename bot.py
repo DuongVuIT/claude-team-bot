@@ -84,6 +84,12 @@ def by_id(data, cid):
 conns = {}  # kênh ("send" / "poll") -> kết nối HTTPS giữ sẵn, đỡ bắt tay SSL mỗi lần gọi
 
 
+class TelegramError(RuntimeError):
+    def __init__(self, method, status, error):
+        self.retry_after = error.get("parameters", {}).get("retry_after", 0)
+        super().__init__(f"{method}: HTTP {status}: {error.get('description', 'Telegram API error')}")
+
+
 def call(method, params, timeout, lane="send"):
     body = json.dumps({k: v for k, v in params.items() if v is not None}).encode()
     for _ in range(2):
@@ -106,10 +112,13 @@ def call(method, params, timeout, lane="send"):
             if not reused or isinstance(err, socket.timeout):
                 raise
     if r.status >= 400:
-        msg = raw.decode(errors="replace")
-        if "message is not modified" in msg:
+        try:
+            error = json.loads(raw)
+        except ValueError:  # proxy có thể trả HTML khi Telegram lỗi 502
+            error = {}
+        if "message is not modified" in error.get("description", ""):
             return {}
-        raise RuntimeError(f"{method}: {msg}")
+        raise TelegramError(method, r.status, error)
     return json.loads(raw)
 
 
@@ -785,9 +794,10 @@ def main():
         try:
             res = tg_poll(offset)
         except Exception as err:
-            print("poll failed:", err, flush=True)
-            if not isinstance(err, socket.timeout):  # treo/timeout: poll lại ngay
-                time.sleep(3)
+            delay = 0 if isinstance(err, socket.timeout) else max(3, getattr(err, "retry_after", 0))
+            print(f"poll failed (retry in {delay}s):", err, flush=True)
+            if delay:  # treo/timeout: poll lại ngay; 429: đợi đủ retry_after
+                time.sleep(delay)
             continue
         for u in res.get("result", []):
             offset = state["offset"] = u["update_id"] + 1
@@ -805,7 +815,7 @@ def main():
             try:
                 if cq:
                     try:
-                        tg("answerCallbackQuery", callback_query_id=cq["id"])
+                        tg("answerCallbackQuery", timeout=3, callback_query_id=cq["id"])
                     except Exception:
                         pass
                     on_callback(chat, msg["message_id"], cq.get("data") or "")

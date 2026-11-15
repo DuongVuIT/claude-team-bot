@@ -28,6 +28,9 @@ jobs:
       REPORT_HOUR: "8"
       RUN_MINUTES: "345"
     steps:
+      - name: Kiểm tra dung lượng runner
+        run: df -h / "$RUNNER_TEMP" "$GITHUB_WORKSPACE"
+
       - uses: actions/checkout@v4
 
       # trình duyệt để kick khách hết hạn (dùng Google Chrome có sẵn trên máy GitHub)
